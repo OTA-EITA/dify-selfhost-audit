@@ -1,0 +1,12 @@
+# Used only by .github/workflows/dify-lab.yml on a GitHub-hosted runner.
+# Replaces the published ports of the upstream compose file so that nothing
+# listens on a public interface while the lab stack runs. Needs Docker
+# Compose v2.24.4 or later for the !override tag.
+services:
+  nginx:
+    ports: !override
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+  plugin_daemon:
+    ports: !override
+      - "127.0.0.1:5003:5003"
