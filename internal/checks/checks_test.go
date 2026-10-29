@@ -62,7 +62,6 @@ func TestDefaultFixture(t *testing.T) {
 		"DSA010/MEDIUM/api",
 		"DSA010/MEDIUM/api",
 		"DSA011/MEDIUM/weaviate",
-		"DSA012/MEDIUM/weaviate",
 		"DSA014/MEDIUM/agent_backend",
 		"DSA015/MEDIUM/agent_backend",
 		"DSA018/MEDIUM/api",
@@ -190,6 +189,24 @@ func TestSandboxMismatch(t *testing.T) {
 	}
 }
 
+func TestWeaviateAnonymous(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true\n", false},
+		{"WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true\nWEAVIATE_AUTHORIZATION_ADMINLIST_ENABLED=false\n", true},
+		{"WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true\nWEAVIATE_AUTHORIZATION_ADMINLIST_USERS=hello@dify.ai,anonymous\n", true},
+		{"WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true\nWEAVIATE_AUTHORIZATION_ADMINLIST_ENABLED=false\nWEAVIATE_AUTHORIZATION_RBAC_ENABLED=true\n", false},
+		{"WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=false\nWEAVIATE_AUTHORIZATION_ADMINLIST_ENABLED=false\n", false},
+	}
+	for _, tc := range cases {
+		if got := has(envOnly(t, tc.env), "DSA012"); got != tc.want {
+			t.Errorf("%q: DSA012=%v, want %v", tc.env, got, tc.want)
+		}
+	}
+}
+
 func TestVectorStoreNotWeaviate(t *testing.T) {
 	r := envOnly(t, "VECTOR_STORE=qdrant\nWEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true\n")
 	if has(r, "DSA011") || has(r, "DSA012") {
@@ -221,7 +238,7 @@ func TestRulesCatalogue(t *testing.T) {
 			t.Errorf("%s incomplete", r.ID)
 		}
 		for _, ref := range r.Refs {
-			if !strings.HasPrefix(ref, "https://github.com/langgenius/") {
+			if !strings.HasPrefix(ref, "https://github.com/langgenius/") && !strings.HasPrefix(ref, "https://github.com/weaviate/weaviate/blob/v") {
 				t.Errorf("%s: unexpected ref %s", r.ID, ref)
 			}
 		}

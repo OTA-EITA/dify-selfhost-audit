@@ -257,9 +257,39 @@ func (c *ctx) weaviate() {
 			}
 		}
 	}
-	if st, ok := c.get("weaviate", "AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED", "WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED"); ok && truthy(st.value) {
-		c.add("DSA012", st, "Requests without an API key are accepted by Weaviate.")
+	if st, ok := c.get("weaviate", "AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED", "WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED"); ok && truthy(st.value) && c.anonymousAuthorized() {
+		c.add("DSA012", st, "Requests without an API key are accepted and authorized by Weaviate.")
 	}
+}
+
+// anonymousAuthorized reports whether Weaviate grants anything to anonymous
+// requests. With the admin list on (the 1.17.1 default), users outside the
+// admin and read-only lists, anonymous included, are refused every action.
+func (c *ctx) anonymousAuthorized() bool {
+	val := func(containerKey, envKey, def string) string {
+		st, _ := c.get("weaviate", containerKey, envKey)
+		if !st.set {
+			return def
+		}
+		return st.value
+	}
+	if truthy(val("AUTHORIZATION_RBAC_ENABLED", "WEAVIATE_AUTHORIZATION_RBAC_ENABLED", "false")) {
+		return false
+	}
+	if !truthy(val("AUTHORIZATION_ADMINLIST_ENABLED", "WEAVIATE_AUTHORIZATION_ADMINLIST_ENABLED", "true")) {
+		return true
+	}
+	for _, k := range [][2]string{
+		{"AUTHORIZATION_ADMINLIST_USERS", "WEAVIATE_AUTHORIZATION_ADMINLIST_USERS"},
+		{"AUTHORIZATION_ADMINLIST_READONLY_USERS", "WEAVIATE_AUTHORIZATION_ADMINLIST_READONLY_USERS"},
+	} {
+		for _, u := range strings.Split(val(k[0], k[1], ""), ",") {
+			if strings.TrimSpace(u) == "anonymous" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Services covered by dedicated rules; DSA013 handles the rest.
