@@ -53,6 +53,13 @@ check "sandbox with no key" "401" "$(in_api "$DEP")"
 pd=$(dc exec -T plugin_daemon sh -c "command -v curl >/dev/null && curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'X-Api-Key: dify-sandbox' '$DEP' || echo no-curl" 2>/dev/null || echo exec-failed)
 row "sandbox reachable from plugin_daemon with default key" "200 (same network)" "$pd" info
 
+# Weaviate: .env.example turns anonymous access on, but the admin list (also
+# on by default) should still refuse anonymous requests.
+WV='http://weaviate:8080/v1/schema'
+check "weaviate /v1/schema with no key (anonymous)" "403" "$(in_api --noproxy '*' "$WV")"
+check "weaviate /v1/schema with the default API key" "200" \
+  "$(in_api --noproxy '*' -H 'Authorization: Bearer WVF5YThaHlkYwhGUSmCRgsX3tD5ngdN8pkih' "$WV")"
+
 # --- 3. ssrf_proxy -----------------------------------------------------------
 P='http://ssrf_proxy:3128'
 check "via ssrf_proxy: http://169.254.169.254/ (metadata)" "403" "$(in_api -x "$P" http://169.254.169.254/)"

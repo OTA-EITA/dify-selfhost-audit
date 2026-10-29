@@ -109,6 +109,7 @@ jobs:
       - name: Live probes
         run: |
           bash lab/probe.sh dify/docker "$GITHUB_WORKSPACE/lab/docker-compose.override.yaml" "$RUNNER_TEMP/probes.md"
+          cat "$RUNNER_TEMP/probes.md"
           {
             echo "## Live probes (default .env)"
             cat "$RUNNER_TEMP/probes.md"
@@ -127,12 +128,23 @@ jobs:
             [ "$status" = not_started ] && break
             sleep 5
           done
+          if [ "$status" = not_started ]; then mark="as expected"; else mark="**differs**"; fi
+          echo "| GET /console/api/init with INIT_PASSWORD set | not_started | \`$status\` | $mark |" | tee -a "$RUNNER_TEMP/probes.md"
           {
             echo "## INIT_PASSWORD contrast"
             echo "| Probe | Expected | Observed |"
             echo "|---|---|---|"
             echo "| GET /console/api/init with INIT_PASSWORD set | not_started | \`$status\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the probe results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: probes
+          path: ${{ runner.temp }}/probes.md
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Container logs on failure
         if: failure()
