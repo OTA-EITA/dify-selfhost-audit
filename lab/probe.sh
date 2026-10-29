@@ -55,10 +55,22 @@ row "sandbox reachable from plugin_daemon with default key" "200 (same network)"
 
 # Weaviate: .env.example turns anonymous access on, but the admin list (also
 # on by default) should still refuse anonymous requests.
-WV='http://weaviate:8080/v1/schema'
-check "weaviate /v1/schema with no key (anonymous)" "403" "$(in_api --noproxy '*' "$WV")"
-check "weaviate /v1/schema with the default API key" "200" \
-  "$(in_api --noproxy '*' -H 'Authorization: Bearer WVF5YThaHlkYwhGUSmCRgsX3tD5ngdN8pkih' "$WV")"
+# A list endpoint can answer 200 with only what the caller may see, so seed one
+# object with the key and then try to read and write it without one.
+WV='http://weaviate:8080/v1'
+WAUTH='Authorization: Bearer WVF5YThaHlkYwhGUSmCRgsX3tD5ngdN8pkih'
+OID=00000000-0000-4000-8000-00000000c0de
+wv() { dc exec -T api curl -s --noproxy '*' --max-time 10 "$@" 2>/dev/null || true; }
+wv -o /dev/null -X POST -H "$WAUTH" -H 'Content-Type: application/json' \
+  -d '{"class":"LabProbe","properties":[{"name":"text","dataType":["text"]}]}' "$WV/schema"
+seed=$(wv -o /dev/null -w '%{http_code}' -X POST -H "$WAUTH" -H 'Content-Type: application/json' \
+  -d "{\"class\":\"LabProbe\",\"id\":\"$OID\",\"properties\":{\"text\":\"lab\"}}" "$WV/objects")
+check "weaviate: seed one object with the default API key" "200" "$seed"
+check "weaviate: read that object with no key" "403" "$(wv -o /dev/null -w '%{http_code}' "$WV/objects/LabProbe/$OID")"
+check "weaviate: create an object with no key" "403" "$(wv -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"class":"LabProbe","properties":{"text":"anon"}}' "$WV/objects")"
+nclasses=$(wv "$WV/schema" | jq -r '(.classes // []) | length' 2>/dev/null)
+row "weaviate: GET /v1/schema with no key, number of classes listed" "0 (filtered)" "${nclasses:-?}" info
 
 # --- 3. ssrf_proxy -----------------------------------------------------------
 P='http://ssrf_proxy:3128'
