@@ -1,0 +1,145 @@
+# Live lab: starts the default Dify 1.17.1 stack on a disposable GitHub-hosted
+# runner and checks the static findings against the running containers.
+# Manual only. Separate from ci.yml on purpose: it pulls ~10 GB of upstream
+# images and runs upstream code, so it must never run on pushes or PRs.
+name: dify-lab
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dify-lab
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DIFY_TAG: "1.17.1"
+      DIFY_COMMIT: 8387590ace4a094de812b7847fc6a4c3a27cd52b
+      DC: docker compose -p difylab -f docker-compose.yaml -f ${{ github.workspace }}/lab/docker-compose.override.yaml
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out langgenius/dify at the pinned tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: langgenius/dify
+          ref: ${{ env.DIFY_TAG }}
+          path: dify
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the Dify tag still points at the expected commit
+        run: |
+          got=$(git -C dify rev-parse HEAD)
+          if [ "$got" != "$DIFY_COMMIT" ]; then
+            echo "::error::tag $DIFY_TAG is $got, expected $DIFY_COMMIT"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Static audit of the untouched upstream files
+        run: |
+          go build -o "$RUNNER_TEMP/dify-selfhost-audit" ./cmd/dify-selfhost-audit
+          {
+            echo "## Static audit: Dify $DIFY_TAG docker/.env.example + docker-compose.yaml"
+            echo '```'
+            "$RUNNER_TEMP/dify-selfhost-audit" --compose dify/docker/docker-compose.yaml \
+              --env dify/docker/.env.example --fail-on none | sed -n '1,/^Details:/p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space for the images
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af >/dev/null
+          df -h /
+
+      - name: Prepare .env and confirm every published port is on 127.0.0.1
+        working-directory: dify/docker
+        run: |
+          docker compose version
+          cp .env.example .env
+          {
+            echo "## Published ports"
+            echo "Upstream compose (no override): host_ip per published port"
+            echo '```'
+            docker compose -p difylab -f docker-compose.yaml config --format json \
+              | jq -r '.services | to_entries[] | .key as $s | (.value.ports // [])[] | "\($s) \(.host_ip // "(all interfaces)"):\(.published) -> \(.target)"'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          bad=$($DC config --format json \
+            | jq -r '.services | to_entries[] | .key as $s | (.value.ports // [])[] | select((.host_ip // "") != "127.0.0.1") | "\($s) \(.published)"')
+          if [ -n "$bad" ]; then
+            echo "::error::ports not bound to 127.0.0.1 in the lab: $bad"
+            exit 1
+          fi
+
+      - name: Start the default stack
+        working-directory: dify/docker
+        run: |
+          $DC up -d
+          for i in $(seq 1 120); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1/console/api/setup || true)
+            sandbox=$($DC exec -T api curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://sandbox:8194/health 2>/dev/null || true)
+            if [ "$code" = 200 ] && [ "$sandbox" = 200 ]; then echo "ready after $((i*10))s"; break; fi
+            sleep 10
+          done
+          $DC ps
+          {
+            echo "## Images"
+            echo '```'
+            $DC images
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Live probes
+        run: |
+          bash lab/probe.sh dify/docker "$GITHUB_WORKSPACE/lab/docker-compose.override.yaml" "$RUNNER_TEMP/probes.md"
+          {
+            echo "## Live probes (default .env)"
+            cat "$RUNNER_TEMP/probes.md"
+            echo
+            echo "Rows marked info have no fixed expectation; the sandboxed-code row shows whether code with enable_network can reach other containers without going through ssrf_proxy."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Contrast - set INIT_PASSWORD and recreate api
+        working-directory: dify/docker
+        run: |
+          sed -i 's/^INIT_PASSWORD=.*/INIT_PASSWORD=lab-only-init-password/' .env
+          $DC up -d api
+          status="?"
+          for i in $(seq 1 60); do
+            status=$(curl -s --max-time 5 http://127.0.0.1/console/api/init | jq -r '.status // "?"' 2>/dev/null || true)
+            [ "$status" = not_started ] && break
+            sleep 5
+          done
+          {
+            echo "## INIT_PASSWORD contrast"
+            echo "| Probe | Expected | Observed |"
+            echo "|---|---|---|"
+            echo "| GET /console/api/init with INIT_PASSWORD set | not_started | \`$status\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Container logs on failure
+        if: failure()
+        working-directory: dify/docker
+        run: $DC logs --tail 200 api sandbox ssrf_proxy nginx plugin_daemon || true
+
+      - name: Tear down
+        if: always()
+        working-directory: dify/docker
+        run: $DC down -v --remove-orphans || true
