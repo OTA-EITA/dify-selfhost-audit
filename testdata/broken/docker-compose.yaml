@@ -1,0 +1,15 @@
+services:
+  sandbox:
+    image: langgenius/dify-sandbox:0.2.15
+    environment:
+      - API_KEY=dify-sandbox
+  tools:
+    image: example/tools
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  db:
+    image: postgres:15-alpine
+    ports:
+      - target: 5432
+        published: 5432
